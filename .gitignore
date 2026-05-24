@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Env / secrets
+.env
+.env.local
+*.secret
+
+# Project artifacts — large media, evidence outputs, model weights
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.h264
+*.h265
+*.pt
+*.onnx
+*.engine
+evidence/
+samples/*.mp4
+samples/*.jpg
+samples/*.png
+!samples/.gitkeep
+demo/*.gif
+demo/*.mp4
+!demo/.gitkeep
+
+# Reference repos (cloned locally for research, not part of this project)
+references/
+
+# Internal planning docs — not public
+.internal/
+.claude/
+
+# Detection JSONL fixtures larger than ~1 MB
+tests/fixtures/*.jsonl.gz
+tests/fixtures/*.mp4
