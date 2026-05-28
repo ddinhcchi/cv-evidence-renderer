@@ -9,7 +9,7 @@ Regenerate the golden when an intentional pixel change lands:
     REGEN_GOLDEN=1 pytest tests/test_golden_frame.py
 
 PSNR is benchmarked on the same machine that generated the golden PNG so
-local reruns sit around 45–50 dB. Cross-platform libx264 builds (the
+local reruns sit around 45-50 dB. Cross-platform libx264 builds (the
 Homebrew bottle on macOS vs the apt build on Ubuntu) diverge by enough
 that the same logical render produces ~36 dB between platforms. The
 threshold below is set to catch real regressions (a broken overlay sits
