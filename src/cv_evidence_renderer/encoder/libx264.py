@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 from types import TracebackType
 
@@ -49,7 +50,10 @@ class Libx264Encoder:
 
         self.output.parent.mkdir(parents=True, exist_ok=True)
         container = av.open(str(self.output), mode="w")
-        stream = container.add_stream("libx264", rate=self.fps)
+        # PyAV's add_stream wants a Fraction, not a float — bare floats raise
+        # `AttributeError: 'float' object has no attribute 'numerator'`.
+        rate = Fraction(self.fps).limit_denominator(10000)
+        stream = container.add_stream("libx264", rate=rate)
         stream.width = self.width
         stream.height = self.height
         stream.pix_fmt = "yuv420p"

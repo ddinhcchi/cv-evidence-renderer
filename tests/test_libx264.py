@@ -66,6 +66,15 @@ def test_rejects_non_positive_fps(tmp_path: Path) -> None:
         Libx264Encoder(tmp_path / "x.mp4", width=64, height=64, fps=0)
 
 
+def test_accepts_float_fps(tmp_path: Path) -> None:
+    """Regression: PyAV needs Fraction for rate; bare floats raised AttributeError."""
+    out = tmp_path / "float_fps.mp4"
+    with Libx264Encoder(out, width=64, height=64, fps=29.97) as enc:
+        for t in range(5):
+            enc.write(_gradient_frame(64, 64, t))
+    assert out.exists() and out.stat().st_size > 0
+
+
 def test_write_before_open_raises(tmp_path: Path) -> None:
     enc = Libx264Encoder(tmp_path / "x.mp4", width=64, height=64, fps=10)
     with pytest.raises(RuntimeError, match="not open"):
