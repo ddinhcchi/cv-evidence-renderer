@@ -23,7 +23,48 @@ def from_supervision(
     frame_idx: int | None = None,
     timestamp: float | None = None,
 ) -> FrameDetections:
-    raise NotImplementedError("v0.2")
+    """Convert a `supervision.Detections` into a `FrameDetections`.
+
+    Label resolution prefers `detections.data["class_name"]`; otherwise it
+    falls back to `f"class_{class_id}"`; if neither is available the label
+    is `"obj"`. Confidence and tracker_id are copied through when present.
+
+    `supervision` is an optional dependency — install with
+    `pip install cv-evidence-renderer[supervision]`. This function uses only
+    duck-typed attribute access, so no runtime import is required here.
+    """
+    if frame_idx is None and timestamp is None:
+        raise ValueError("from_supervision needs either frame_idx or timestamp")
+
+    n = len(detections)
+    class_names = None
+    if hasattr(detections, "data") and detections.data:
+        class_names = detections.data.get("class_name")
+
+    parsed: list[Detection] = []
+    for i in range(n):
+        x1, y1, x2, y2 = (float(v) for v in detections.xyxy[i])
+
+        if class_names is not None:
+            label = str(class_names[i])
+        elif detections.class_id is not None:
+            label = f"class_{int(detections.class_id[i])}"
+        else:
+            label = "obj"
+
+        score = float(detections.confidence[i]) if detections.confidence is not None else None
+        track_id = int(detections.tracker_id[i]) if detections.tracker_id is not None else None
+
+        parsed.append(
+            Detection(
+                bbox=(x1, y1, x2, y2),
+                label=label,
+                score=score,
+                track_id=track_id,
+            )
+        )
+
+    return FrameDetections(detections=parsed, frame_idx=frame_idx, timestamp=timestamp)
 
 
 def from_jsonl(path: str | Path) -> Iterator[FrameDetections]:

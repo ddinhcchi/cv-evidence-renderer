@@ -82,6 +82,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+"tests/test_adapters_supervision.py" = ["E402"]  # `importorskip` must run before the package import
 "src/cv_evidence_renderer/cli.py" = ["B008"]  # typer.Option in defaults is the idiomatic Typer pattern
 
 [tool.pytest.ini_options]
