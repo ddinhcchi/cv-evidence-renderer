@@ -2,6 +2,7 @@
 
 Supports:
     - `supervision.Detections` (optional, only if `pip install cv-evidence-renderer[supervision]`)
+    - Ultralytics YOLO `Results` (routed through supervision)
     - Raw JSONL: one detection per line, see SPEC.md §6.3
 """
 
@@ -65,6 +66,35 @@ def from_supervision(
         )
 
     return FrameDetections(detections=parsed, frame_idx=frame_idx, timestamp=timestamp)
+
+
+def from_yolo_results(
+    results: object,
+    frame_idx: int | None = None,
+    timestamp: float | None = None,
+) -> FrameDetections:
+    """Convert an Ultralytics YOLO `Results` object into a `FrameDetections`.
+
+    Routes through `supervision.Detections.from_ultralytics` so we inherit
+    supervision's tracking of ultralytics' shifting API rather than parsing
+    the Results ourselves. Requires the `supervision` optional extra.
+
+    Args:
+        results: A single Ultralytics `Results` instance (i.e. one element of
+            the list returned by `YOLO(...)(frame)`).
+        frame_idx: Frame index for the resulting `FrameDetections`.
+        timestamp: Alternative key — use one of frame_idx or timestamp.
+    """
+    try:
+        import supervision as sv
+    except ImportError as exc:
+        raise ImportError(
+            "from_yolo_results requires supervision; "
+            "install with `pip install cv-evidence-renderer[supervision]`"
+        ) from exc
+
+    detections = sv.Detections.from_ultralytics(results)
+    return from_supervision(detections, frame_idx=frame_idx, timestamp=timestamp)
 
 
 def from_jsonl(path: str | Path) -> Iterator[FrameDetections]:
