@@ -1,10 +1,8 @@
 # 🎬 cv-evidence-renderer
 
-The missing **evidence-clip layer** between your detector and storage. Trigger on any detection event → get a trimmed MP4 with bounding boxes already burned in, encoded by NVENC, in pure Python — no DeepStream required.
+The missing **evidence-clip layer** between your detector and storage. Point it at a video + a detection JSONL → get a trimmed MP4 with bounding boxes already burned in, encoded in pure Python — no DeepStream required.
 
-![demo](demo/demo.gif)
-
-> Demo GIF placeholder: live RTSP feed, person enters zone, the recorder catches the 5 seconds *before* the trigger from its ring buffer, then records 10 seconds after — evidence MP4 lands on disk with bbox + label.
+> **Status: v0.0.1 — offline mode works end-to-end** (decode → bbox burn-in → libx264 trim). Live RTSP recording, ring buffer, and NVENC encoding are designed but not yet implemented (see Roadmap). Demo GIF lands in v0.3 alongside the live recorder.
 
 ---
 
@@ -22,14 +20,17 @@ So every team hand-rolls OpenCV + an FFmpeg subprocess, ships the bug to prod, a
 
 ## What it does (and doesn't)
 
-✅ **Does:**
-- Event-window MP4 export with **configurable pre-buffer and post-buffer** seconds
+✅ **Working today (v0.0.1):**
+- **Offline mode**: re-render evidence from a saved video + detections JSONL with event-window trim
 - **Bounding-box / label burn-in** before encode (so the evidence file *is* the annotated version)
-- **NVENC** (H.264 / H.265) on CUDA hosts, **libx264** fallback everywhere else
-- Live mode: threaded RTSP reader → ring buffer → `trigger_event()` flushes evidence
-- Offline mode: re-render evidence from saved video + detections JSONL
-- Multi-stream parallel via shared encoder pool
-- **First-class interop** with [`supervision.Detections`](https://supervision.roboflow.com/) — also accepts raw JSONL
+- **libx264** CPU encoding via PyAV — works on Mac, Linux, Windows with no GPU
+- **First-class interop** with [`supervision.Detections`](https://supervision.roboflow.com/) and Ultralytics YOLO `Results` — also accepts raw JSONL
+- Python library + Typer CLI (`cv-evidence render ...`)
+
+🚧 **Designed, not yet implemented (see Roadmap):**
+- **NVENC** GPU encoding (H.264 / H.265) — v0.2
+- **Live mode**: threaded RTSP reader → ring buffer → `trigger_event()` flushes evidence — v0.2
+- **Multi-stream** parallel via shared encoder pool — v0.3
 
 🚫 **Does not (by design):**
 - Detection / tracking — bring your own (YOLO, Detectron2, anything that produces bboxes)
@@ -48,36 +49,7 @@ pip install cv-evidence-renderer
 pip install cv-evidence-renderer[supervision]
 ```
 
-### Use case A: live RTSP with event trigger
-
-```python
-from cv_evidence_renderer import EvidenceRecorder
-import supervision as sv  # optional
-
-recorder = EvidenceRecorder(
-    source="rtsp://camera.local/stream",
-    pre_buffer_seconds=5,
-    post_buffer_seconds=10,
-    encoder="nvenc_h264",        # auto-falls back to libx264 if no GPU
-    output_dir="./evidence/",
-)
-recorder.start()
-
-# In your detection loop:
-for frame_idx, frame in your_video_reader:
-    detections: sv.Detections = your_detector(frame)
-    recorder.push(frame_idx, detections)
-
-    if your_business_rule(detections):
-        clip_path = recorder.trigger_event(
-            event_id="violation_001",
-            label="no_helmet zone A",
-        )
-        # → ./evidence/violation_001_20260524T143012.mp4
-        # → 15s clip: 5s pre + trigger + 10s post, bbox burned in
-```
-
-### Use case B: offline batch from JSONL
+### Use case A: offline batch from JSONL (working today)
 
 ```python
 from cv_evidence_renderer import render_from_jsonl
@@ -88,11 +60,11 @@ render_from_jsonl(
     event_start=12.5,            # seconds
     event_end=22.0,
     output="evidence/event_001.mp4",
-    encoder="nvenc_h264",
+    encoder="libx264",           # NVENC ships in v0.2
 )
 ```
 
-### Use case C: CLI
+### Use case B: CLI (working today)
 
 ```bash
 cv-evidence render \
@@ -100,30 +72,60 @@ cv-evidence render \
   --detections detections.jsonl \
   --event-start 12.5 --event-end 22.0 \
   --output evidence.mp4 \
-  --encoder nvenc_h264
+  --encoder libx264
+```
 
-# Batch: one folder of video + one events.jsonl → N evidence files
-cv-evidence batch \
-  --inputs ./videos/ \
-  --events events.jsonl \
-  --output-dir ./evidence/ \
-  --workers 4
+### Use case C: route detections from Ultralytics YOLO or supervision
+
+```python
+import supervision as sv
+from ultralytics import YOLO
+from cv_evidence_renderer.adapters import from_yolo_results, from_supervision
+
+model = YOLO("yolov8n.pt")
+results = model("incidents/raw_001.mp4")
+
+# Either: stream Ultralytics Results directly
+frame_detections = [
+    from_yolo_results(r, frame_idx=i) for i, r in enumerate(results)
+]
+
+# Or: pre-converted supervision.Detections
+det = sv.Detections.from_ultralytics(results[0])
+frame_detections = [from_supervision(det, frame_idx=0)]
+```
+
+Both adapters require the optional `[supervision]` extra (`pip install cv-evidence-renderer[supervision]`).
+
+### Use case D: live RTSP recorder (v0.2 — not yet implemented)
+
+```python
+# This is the planned API. EvidenceRecorder currently raises NotImplementedError.
+from cv_evidence_renderer import EvidenceRecorder
+
+recorder = EvidenceRecorder(
+    source="rtsp://camera.local/stream",
+    pre_buffer_seconds=5,
+    post_buffer_seconds=10,
+    encoder="nvenc_h264",  # NVENC also v0.2
+)
+recorder.start()
+# ... see SPEC.md for the full design.
 ```
 
 ---
 
-## Benchmark — RTX 3060 vs Apple M4
+## Benchmark — Apple M4 (CPU libx264 baseline)
 
-15-second evidence clip @ 1080p, bbox burn-in on every frame (30fps), 5s pre + 10s post buffer. Reproduce with `python scripts/benchmark.py`.
+5-second source video, 30 fps, two detections burned in every frame, full decode → overlay → encode pipeline through `render_from_jsonl`. Reproduce with `python scripts/benchmark.py`.
 
-> ⚠️ Benchmark numbers below are PLACEHOLDERS for the launch — to be filled in Week 4 with reproducible measurements on the actual hardware.
+| Resolution | Render time | Throughput | × realtime | Output |
+|---|---:|---:|---:|---:|
+| 480p (854×480) | 0.53 s | **282 fps** | 9.4× | 0.42 MB |
+| 720p (1280×720) | 0.89 s | 168 fps | 5.6× | 0.70 MB |
+| 1080p (1920×1080) | 1.70 s | 88 fps | 2.95× | 1.34 MB |
 
-| Device | Encoder | Render time | Throughput | File size |
-|---|---|---:|---:|---:|
-| RTX 3060 | `nvenc_h264` | TBD | TBD | TBD |
-| RTX 3060 | `libx264` | TBD | TBD | TBD |
-| Apple M4 | `libx264` | TBD | TBD | TBD |
-| CPU only | `libx264` | TBD | TBD | TBD |
+CPU-only libx264 on M4 already runs faster than realtime up to 1080p; NVENC on a discrete GPU (v0.2) will be added to this table side by side once the encoder lands.
 
 ---
 
@@ -190,11 +192,13 @@ See [COMPETITORS.md](COMPETITORS.md) for the full research write-up.
 | | cv-evidence-renderer | supervision | DeepStream Smart Record | KeyClipWriter |
 |---|---|---|---|---|
 | Python-only install | ✅ | ✅ | ❌ (needs DeepStream SDK) | ✅ |
-| NVENC encode | ✅ | ❌ | ✅ | ❌ |
-| Event-window trim with pre-buffer | ✅ | ❌ | ✅ (C only) | ✅ |
-| Bbox burn-in | ✅ | ✅ (excellent) | ⚠️ (bug since 6.4) | ❌ |
-| Multi-stream pool | ✅ | ❌ | ✅ | ❌ |
+| Event-window trim (offline) | ✅ | ❌ | ✅ (C only) | ✅ |
+| Bbox burn-in into evidence | ✅ | ✅ (excellent) | ⚠️ (bug since 6.4) | ❌ |
 | supervision interop | ✅ | — | ❌ | ❌ |
+| Ultralytics YOLO adapter | ✅ | ✅ (via `from_ultralytics`) | ❌ | ❌ |
+| NVENC encode | 🚧 v0.2 | ❌ | ✅ | ❌ |
+| Live RTSP ring buffer | 🚧 v0.2 | ❌ | ✅ (C only) | ✅ |
+| Multi-stream pool | 🚧 v0.3 | ❌ | ✅ | ❌ |
 
 ---
 
