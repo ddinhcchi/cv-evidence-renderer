@@ -50,6 +50,7 @@ samples/*.png
 demo/*.gif
 demo/*.mp4
 !demo/.gitkeep
+!demo/demo.gif
 
 # Reference repos (cloned locally for research, not part of this project)
 references/

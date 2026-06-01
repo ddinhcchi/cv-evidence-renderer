@@ -2,7 +2,11 @@
 
 The missing **evidence-clip layer** between your detector and storage. Point it at a video + a detection JSONL → get a trimmed MP4 with bounding boxes already burned in, encoded in pure Python — no DeepStream required.
 
-> **Status: v0.0.1 — offline mode works end-to-end** (decode → bbox burn-in → libx264 trim). Live RTSP recording, ring buffer, and NVENC encoding are designed but not yet implemented (see Roadmap). Demo GIF lands in v0.3 alongside the live recorder.
+![demo](demo/demo.gif)
+
+> The GIF above is rendered through `cv-evidence-renderer` itself — synthetic scene, synthetic detections, real output. Regenerate any time with `python scripts/make_demo_gif.py`.
+
+> **Status: v0.0.1 — offline mode works end-to-end** (decode → bbox burn-in → libx264 trim). Live RTSP recording, ring buffer, and NVENC encoding are designed but not yet implemented (see Roadmap).
 
 ---
 
