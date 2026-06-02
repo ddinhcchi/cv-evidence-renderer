@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cv-evidence-renderer — The missing evidence-clip layer</title>
+<meta name="description" content="Trigger on any detection event and get a trimmed MP4 with bounding boxes already burned in. Python library + CLI. No DeepStream required.">
+<meta property="og:title" content="cv-evidence-renderer">
+<meta property="og:description" content="The missing evidence-clip layer between your detector and storage.">
+<meta property="og:image" content="https://raw.githubusercontent.com/ddinhcchi/cv-evidence-renderer/main/demo/demo.gif">
+<meta property="og:url" content="https://ddinhcchi.github.io/cv-evidence-renderer/">
+<style>
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #f97316;
+  --accent-dim: #c2410c;
+  --code-bg: #1c2128;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Inter", sans-serif;
+  line-height: 1.55;
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+header { padding: 96px 0 48px; text-align: center; }
+header h1 {
+  font-size: clamp(2.2rem, 5vw, 3rem);
+  margin: 0 0 16px;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+}
+header h1 .emoji { display: inline-block; margin-right: 8px; }
+header .tag {
+  display: inline-block;
+  margin-bottom: 16px;
+  padding: 4px 12px;
+  background: rgba(249, 115, 22, 0.12);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+header .lede {
+  font-size: 1.18rem;
+  color: var(--muted);
+  max-width: 640px;
+  margin: 0 auto 32px;
+}
+header .lede strong { color: var(--text); }
+.cta {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.btn {
+  display: inline-block;
+  padding: 11px 20px;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-dim); }
+.btn-secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--muted); }
+.cmd {
+  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  display: inline-block;
+  background: var(--code-bg);
+  color: var(--text);
+  padding: 11px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  user-select: all;
+}
+.cmd::before { content: "$ "; color: var(--muted); }
+.demo-img {
+  display: block;
+  margin: 32px auto 0;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.demo-caption {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 12px;
+}
+section { padding: 48px 0; border-top: 1px solid var(--border); }
+section h2 {
+  font-size: 1.6rem;
+  margin: 0 0 24px;
+  letter-spacing: -0.01em;
+}
+section p { color: var(--text); }
+section p.muted { color: var(--muted); }
+.problem-quote {
+  font-size: 1.05rem;
+  color: var(--muted);
+  border-left: 3px solid var(--accent);
+  padding-left: 18px;
+  margin: 16px 0;
+}
+table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.92rem; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.cmark { color: var(--green); }
+.xmark { color: var(--red); }
+.wmark { color: var(--yellow); }
+.cards { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.card h3 { margin: 0 0 8px; font-size: 1.05rem; }
+.card p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+code { font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+pre code { color: var(--text); }
+.kw { color: #ff7b72; }
+.str { color: #a5d6ff; }
+.com { color: var(--muted); font-style: italic; }
+.fn { color: #d2a8ff; }
+.faq dt { font-weight: 600; margin-top: 18px; color: var(--text); }
+.faq dt::before { content: "› "; color: var(--accent); }
+.faq dd { margin: 6px 0 0 16px; color: var(--muted); }
+.faq dd a { color: var(--accent); }
+footer { padding: 48px 0 80px; text-align: center; color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--border); }
+footer a { color: var(--text); text-decoration: none; }
+footer a:hover { color: var(--accent); }
+footer .links { margin-bottom: 12px; }
+footer .links a { margin: 0 12px; }
+@media (max-width: 600px) {
+  header { padding: 64px 0 32px; }
+  section { padding: 36px 0; }
+  .cmd { display: block; word-break: break-all; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="tag">v0.0.1 · MIT</div>
+    <h1><span class="emoji">🎬</span>cv-evidence-renderer</h1>
+    <p class="lede">
+      The missing <strong>evidence-clip layer</strong> between your detector and storage.
+      Point it at a video and a detection JSONL → get a trimmed MP4 with bounding boxes
+      already burned in. Python. No DeepStream required.
+    </p>
+    <div class="cta">
+      <span class="cmd">pip install cv-evidence-renderer</span>
+      <a class="btn btn-primary" href="https://github.com/ddinhcchi/cv-evidence-renderer">⭐ Star on GitHub</a>
+      <a class="btn btn-secondary" href="https://github.com/ddinhcchi/cv-evidence-renderer#readme">Read the docs</a>
+    </div>
+    <img class="demo-img" src="https://raw.githubusercontent.com/ddinhcchi/cv-evidence-renderer/main/demo/demo.gif" alt="Two synthetic people moving across a slate background, each tracked with a coloured bounding box and a person #N 0.XX label">
+    <p class="demo-caption">Rendered through cv-evidence-renderer itself. Synthetic scene, synthetic detections, real output.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>The problem</h2>
+    <p>
+      Your detector fires. Now you need a 15-second MP4 with bounding boxes drawn on it,
+      to attach to an alert or archive for compliance. Every CV team writes this code from
+      scratch, ships the bug to prod, then writes it again on the next project.
+    </p>
+    <p class="problem-quote">
+      "How to overlay bbox and save a clip on event?" — recurring thread on the
+      NVIDIA DeepStream forum since 2022. The only official answer (Smart Record) has
+      no Python bindings and bbox burn-in has been broken since DeepStream 6.4.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Why nothing else covers this</h2>
+    <table>
+      <thead>
+        <tr><th></th><th>cv-evidence-renderer</th><th>supervision</th><th>DeepStream Smart Record</th><th>KeyClipWriter</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Python-only install</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="xmark">✗</td><td class="cmark">✓</td></tr>
+        <tr><td>Event-window trim (offline)</td><td class="cmark">✓</td><td class="xmark">✗</td><td class="cmark">C only</td><td class="cmark">✓</td></tr>
+        <tr><td>Bbox burn-in</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="wmark">⚠ bug since 6.4</td><td class="xmark">✗</td></tr>
+        <tr><td>supervision interop</td><td class="cmark">✓</td><td>—</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
+        <tr><td>Ultralytics YOLO adapter</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
+        <tr><td>NVENC encode</td><td class="wmark">🚧 v0.2</td><td class="xmark">✗</td><td class="cmark">✓</td><td class="xmark">✗</td></tr>
+        <tr><td>Live RTSP ring buffer</td><td class="wmark">🚧 v0.2</td><td class="xmark">✗</td><td class="cmark">C only</td><td class="cmark">✓</td></tr>
+        <tr><td>Multi-stream pool</td><td class="wmark">🚧 v0.3</td><td class="xmark">✗</td><td class="cmark">✓</td><td class="xmark">✗</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Quick start</h2>
+    <pre><code><span class="kw">from</span> cv_evidence_renderer <span class="kw">import</span> render_from_jsonl
+
+<span class="fn">render_from_jsonl</span>(
+    video=<span class="str">"incidents/raw_001.mp4"</span>,
+    detections_jsonl=<span class="str">"incidents/raw_001.detections.jsonl"</span>,
+    event_start=<span class="str">12.5</span>,            <span class="com"># seconds</span>
+    event_end=<span class="str">22.0</span>,
+    output=<span class="str">"evidence/event_001.mp4"</span>,
+    encoder=<span class="str">"libx264"</span>,           <span class="com"># NVENC ships in v0.2</span>
+)</code></pre>
+    <p class="muted">That's the whole API for the most common case. Pair with <code>from_yolo_results</code> or <code>from_supervision</code> if you're routing through Ultralytics or supervision.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Benchmark — Apple M4 (CPU libx264 baseline)</h2>
+    <p class="muted">5 s source, 30 fps, two detections burned in every frame. Reproduce with <code>python scripts/benchmark.py</code>.</p>
+    <table>
+      <thead>
+        <tr><th>Resolution</th><th class="num">Render time</th><th class="num">Throughput</th><th class="num">× realtime</th><th class="num">Output</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>480p (854×480)</td><td class="num">0.53 s</td><td class="num"><strong>282 fps</strong></td><td class="num">9.4×</td><td class="num">0.42 MB</td></tr>
+        <tr><td>720p (1280×720)</td><td class="num">0.89 s</td><td class="num">168 fps</td><td class="num">5.6×</td><td class="num">0.70 MB</td></tr>
+        <tr><td>1080p (1920×1080)</td><td class="num">1.70 s</td><td class="num">88 fps</td><td class="num">2.95×</td><td class="num">1.34 MB</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Pure CPU libx264 already runs faster than realtime up to 1080p. NVENC on a discrete GPU will join this table side-by-side once it ships.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Three things you'd actually use this for</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>🚨 Production safety alerts</h3>
+        <p>Attach evidence clips to ops alerts. Operators open the MP4, see exactly what tripped the rule. No JSON sidecar they won't read.</p>
+      </div>
+      <div class="card">
+        <h3>📊 Dataset curation</h3>
+        <p>Re-render every detection event from a week of footage as labeled MP4 clips. Hand to annotators or stack into a training set.</p>
+      </div>
+      <div class="card">
+        <h3>🧪 Demo / paper supplement</h3>
+        <p>Render the exact frames your detector flagged for inclusion in a publication, demo reel, or stakeholder review.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>FAQ</h2>
+    <dl class="faq">
+      <dt>Why not just use supervision?</dt>
+      <dd>We complement it. Pass <code>sv.Detections</code> straight in. We add what supervision doesn't have: event-window trim, ring buffer (v0.2), and eventually NVENC.</dd>
+      <dt>Why not just use DeepStream Smart Record?</dt>
+      <dd>NVIDIA confirmed on their <a href="https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682">developer forum</a> that there's no Python binding, and bbox burn-in has been <a href="https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732">broken since 6.4</a>. When (if) NVIDIA ships Python bindings, we'll add a sink so you can use both together.</dd>
+      <dt>Why not just write it yourself with FFmpeg subprocess?</dt>
+      <dd>Because you already did, twice, and it broke under multi-stream. This is the library version of that script, done right.</dd>
+      <dt>What about NVENC?</dt>
+      <dd>Designed for v0.2. The encoder backend already has a stub interface; what's missing is the PyAV NVENC wiring and a CUDA CI runner. Tracker issue on GitHub once it lands.</dd>
+      <dt>License?</dt>
+      <dd>MIT. Use it commercially, fork it, embed it, ship it.</dd>
+    </dl>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/ddinhcchi/cv-evidence-renderer">GitHub</a>
+      <a href="https://github.com/ddinhcchi/cv-evidence-renderer/issues">Issues</a>
+      <a href="https://github.com/ddinhcchi/cv-evidence-renderer/blob/main/README.md">Docs</a>
+      <a href="https://github.com/ddinhcchi/cv-evidence-renderer/blob/main/COMPETITORS.md">Research</a>
+    </div>
+    <p>Built by <a href="https://github.com/ddinhcchi">ddinhcchi</a>. MIT-licensed. If this saved you a week, leave a ⭐ — that's the whole monetization model.</p>
+  </div>
+</footer>
+
+</body>
+</html>
