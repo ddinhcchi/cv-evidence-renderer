@@ -186,3 +186,89 @@ def test_libx265_not_supported_in_mvp(video_with_jsonl: tuple[Path, Path], tmp_p
     video, dets = video_with_jsonl
     with pytest.raises(NotImplementedError, match="not supported in MVP"):
         render_from_jsonl(video, dets, 0.0, 1.0, tmp_path / "o.mp4", encoder=Encoder.LIBX265)
+
+
+# ---------- v0.1 features ----------
+
+
+def test_playback_speed_doubles_output_fps(
+    video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = video_with_jsonl
+    out = tmp_path / "fast.mp4"
+    render_from_jsonl(video, dets, 1.0, 2.0, out, playback_speed=2.0)
+
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        # Source is 10 fps, 1 s window → 10 frames. Output keeps frame count
+        # but doubles fps, so it plays back as 0.5 s.
+        assert float(stream.average_rate) == pytest.approx(20.0, rel=0.01)
+        n_frames = sum(1 for _ in container.decode(stream))
+        assert n_frames == 10
+
+
+def test_playback_speed_half_halves_output_fps(
+    video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = video_with_jsonl
+    out = tmp_path / "slow.mp4"
+    render_from_jsonl(video, dets, 0.0, 1.0, out, playback_speed=0.5)
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        assert float(stream.average_rate) == pytest.approx(5.0, rel=0.01)
+
+
+def test_playback_speed_zero_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="playback_speed must be > 0"):
+        render_from_jsonl(
+            tmp_path / "x.mp4",
+            tmp_path / "x.jsonl",
+            0.0,
+            1.0,
+            tmp_path / "o.mp4",
+            playback_speed=0,
+        )
+
+
+def test_playback_speed_negative_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="playback_speed must be > 0"):
+        render_from_jsonl(
+            tmp_path / "x.mp4",
+            tmp_path / "x.jsonl",
+            0.0,
+            1.0,
+            tmp_path / "o.mp4",
+            playback_speed=-1.0,
+        )
+
+
+def test_label_formatter_changes_pixels(
+    video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = video_with_jsonl
+    default = tmp_path / "default.mp4"
+    custom = tmp_path / "custom.mp4"
+
+    render_from_jsonl(video, dets, 1.0, 2.0, default)
+    render_from_jsonl(
+        video,
+        dets,
+        1.0,
+        2.0,
+        custom,
+        label_formatter=lambda d: f"!! {d.label.upper()} !!",
+    )
+
+    # Different captions → different text pixels → byte-different files.
+    assert default.read_bytes() != custom.read_bytes()
+
+
+def test_default_label_formatter_is_public() -> None:
+    """v0.1 exposes the default formatter so users can wrap/compose it."""
+    from cv_evidence_renderer.overlay import default_label_formatter
+    from cv_evidence_renderer.types import Detection
+
+    text = default_label_formatter(
+        Detection(bbox=(0, 0, 10, 10), label="person", score=0.87, track_id=3)
+    )
+    assert text == "person #3 0.87"

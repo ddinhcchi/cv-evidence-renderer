@@ -14,7 +14,7 @@ import av.video
 
 from cv_evidence_renderer.adapters import from_jsonl
 from cv_evidence_renderer.encoder.libx264 import Libx264Encoder
-from cv_evidence_renderer.overlay import draw_detections
+from cv_evidence_renderer.overlay import LabelFormatter, draw_detections
 from cv_evidence_renderer.types import Detection, Encoder
 
 
@@ -25,6 +25,8 @@ def render_from_jsonl(
     event_end: float,
     output: str | Path,
     encoder: Encoder | str = Encoder.AUTO,
+    playback_speed: float = 1.0,
+    label_formatter: LabelFormatter | None = None,
 ) -> Path:
     """Render an evidence clip from a saved video + JSONL detections.
 
@@ -36,12 +38,17 @@ def render_from_jsonl(
         output: Output MP4 path.
         encoder: One of the `Encoder` enum values. `AUTO` resolves to
             `LIBX264` in MVP; NVENC variants raise `NotImplementedError`.
+        playback_speed: Output playback multiplier. `2.0` writes the same
+            frames at double fps → output plays in half the wall-clock time.
+            Must be > 0.
+        label_formatter: Optional callable returning the caption shown above
+            each bbox. Defaults to `overlay.default_label_formatter`.
 
     Returns:
         Path to the written evidence MP4.
 
     Raises:
-        ValueError: invalid event window.
+        ValueError: invalid event window or non-positive playback_speed.
         NotImplementedError: requested encoder is not available in MVP.
     """
     if event_start < 0:
@@ -50,6 +57,8 @@ def render_from_jsonl(
         raise ValueError(
             f"event_end must be > event_start; got start={event_start}, end={event_end}"
         )
+    if playback_speed <= 0:
+        raise ValueError(f"playback_speed must be > 0, got {playback_speed}")
 
     encoder_choice = _resolve_encoder(encoder)
     output = Path(output)
@@ -59,17 +68,18 @@ def render_from_jsonl(
         stream = container.streams.video[0]
         if stream.average_rate is None or float(stream.average_rate) <= 0:
             raise ValueError(f"could not determine fps of {video}")
-        fps = float(stream.average_rate)
+        source_fps = float(stream.average_rate)
+        output_fps = source_fps * playback_speed
         width = stream.codec_context.width
         height = stream.codec_context.height
 
-        start_frame = round(event_start * fps)
-        end_frame = round(event_end * fps)  # exclusive
+        start_frame = round(event_start * source_fps)
+        end_frame = round(event_end * source_fps)  # exclusive
 
-        detections_by_frame = _index_detections_by_frame(detections_jsonl, fps)
+        detections_by_frame = _index_detections_by_frame(detections_jsonl, source_fps)
 
         if encoder_choice == Encoder.LIBX264:
-            encoder_obj = Libx264Encoder(output, width=width, height=height, fps=fps)
+            encoder_obj = Libx264Encoder(output, width=width, height=height, fps=output_fps)
         else:  # defensive — _resolve_encoder should have raised already
             raise NotImplementedError(f"encoder {encoder_choice} not supported in MVP")
 
@@ -80,7 +90,11 @@ def render_from_jsonl(
                 if frame_idx >= end_frame:
                     break
                 bgr = frame.to_ndarray(format="bgr24")
-                draw_detections(bgr, detections_by_frame.get(frame_idx, []))
+                draw_detections(
+                    bgr,
+                    detections_by_frame.get(frame_idx, []),
+                    label_formatter=label_formatter,
+                )
                 encoder_obj.write(bgr)
     finally:
         container.close()

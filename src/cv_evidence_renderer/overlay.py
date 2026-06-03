@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 import cv2
 import numpy as np
 
 from cv_evidence_renderer.types import Detection
+
+LabelFormatter = Callable[[Detection], str]
 
 # 10-colour BGR palette picked to stay readable on dark and light backgrounds.
 _PALETTE: tuple[tuple[int, int, int], ...] = (
@@ -36,7 +39,8 @@ def color_for_label(label: str) -> tuple[int, int, int]:
     return _PALETTE[int(digest, 16) % len(_PALETTE)]
 
 
-def _format_label(det: Detection) -> str:
+def default_label_formatter(det: Detection) -> str:
+    """`label #track_id score` — the format the library uses when no custom formatter is provided."""
     parts = [det.label]
     if det.track_id is not None:
         parts.append(f"#{det.track_id}")
@@ -45,12 +49,23 @@ def _format_label(det: Detection) -> str:
     return " ".join(parts)
 
 
-def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
+def draw_detections(
+    frame: np.ndarray,
+    detections: list[Detection],
+    label_formatter: LabelFormatter | None = None,
+) -> np.ndarray:
     """Draw bboxes + labels onto a BGR frame in-place. Returns the same frame for chaining.
 
     Bboxes outside the frame are clamped; degenerate bboxes (zero area or reversed)
     are skipped silently.
+
+    Args:
+        frame: BGR uint8 image, modified in place.
+        detections: list of Detection objects to draw.
+        label_formatter: optional callable returning the caption for each Detection.
+            Defaults to `default_label_formatter`.
     """
+    fmt = label_formatter or default_label_formatter
     h, w = frame.shape[:2]
 
     for det in detections:
@@ -66,7 +81,7 @@ def draw_detections(frame: np.ndarray, detections: list[Detection]) -> np.ndarra
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness=_BOX_THICKNESS)
 
-        text = _format_label(det)
+        text = fmt(det)
         (tw, th), baseline = cv2.getTextSize(text, _FONT, _FONT_SCALE, _FONT_THICKNESS)
         bg_h = th + baseline + 2
 

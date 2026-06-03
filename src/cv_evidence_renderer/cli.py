@@ -31,6 +31,11 @@ def render(
     event_end: float = typer.Option(..., "--event-end", help="Event end, seconds"),
     output: Path = typer.Option(..., "--output", "-o", help="Output MP4 path"),
     encoder: Encoder = typer.Option(Encoder.AUTO, "--encoder", help="Video encoder"),
+    playback_speed: float = typer.Option(
+        1.0,
+        "--playback-speed",
+        help="Output playback multiplier. >1 plays faster (timelapse), <1 slower.",
+    ),
 ) -> None:
     """Render a single evidence clip from a saved video + detections JSONL."""
     out = render_from_jsonl(
@@ -40,6 +45,7 @@ def render(
         event_end=event_end,
         output=output,
         encoder=encoder,
+        playback_speed=playback_speed,
     )
     typer.echo(f"Wrote {out}")
 
