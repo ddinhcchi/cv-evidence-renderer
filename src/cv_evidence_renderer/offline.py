@@ -6,7 +6,9 @@ trim to the event window, burn in bboxes/labels, and encode the result.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from typing import Literal
 
 import av
 import av.container
@@ -16,6 +18,9 @@ from cv_evidence_renderer.adapters import from_jsonl
 from cv_evidence_renderer.encoder.libx264 import Libx264Encoder
 from cv_evidence_renderer.overlay import LabelFormatter, draw_detections
 from cv_evidence_renderer.types import Detection, Encoder
+
+DurationStrategy = Literal["timelapse", "framedrop"]
+_DURATION_STRATEGIES: tuple[DurationStrategy, ...] = ("timelapse", "framedrop")
 
 
 def render_from_jsonl(
@@ -27,6 +32,8 @@ def render_from_jsonl(
     encoder: Encoder | str = Encoder.AUTO,
     playback_speed: float = 1.0,
     label_formatter: LabelFormatter | None = None,
+    max_duration_seconds: float | None = None,
+    duration_strategy: DurationStrategy = "timelapse",
 ) -> Path:
     """Render an evidence clip from a saved video + JSONL detections.
 
@@ -40,15 +47,24 @@ def render_from_jsonl(
             `LIBX264` in MVP; NVENC variants raise `NotImplementedError`.
         playback_speed: Output playback multiplier. `2.0` writes the same
             frames at double fps → output plays in half the wall-clock time.
-            Must be > 0.
+            Must be > 0. Honoured as a *floor* when `max_duration_seconds`
+            also kicks in (we never slow output back down).
         label_formatter: Optional callable returning the caption shown above
             each bbox. Defaults to `overlay.default_label_formatter`.
+        max_duration_seconds: Upper bound on output wall-clock duration. If
+            the window (after `playback_speed`) would exceed this, the clip
+            is compressed by the chosen `duration_strategy`. None = no cap.
+        duration_strategy: How to compress when the cap kicks in.
+            `"timelapse"` (default) keeps every frame but raises output fps;
+            `"framedrop"` keeps fps but samples one frame every N to stay
+            under the cap.
 
     Returns:
         Path to the written evidence MP4.
 
     Raises:
-        ValueError: invalid event window or non-positive playback_speed.
+        ValueError: invalid event window, non-positive playback_speed /
+            max_duration_seconds, or unknown duration_strategy.
         NotImplementedError: requested encoder is not available in MVP.
     """
     if event_start < 0:
@@ -59,6 +75,12 @@ def render_from_jsonl(
         )
     if playback_speed <= 0:
         raise ValueError(f"playback_speed must be > 0, got {playback_speed}")
+    if max_duration_seconds is not None and max_duration_seconds <= 0:
+        raise ValueError(f"max_duration_seconds must be > 0, got {max_duration_seconds}")
+    if duration_strategy not in _DURATION_STRATEGIES:
+        raise ValueError(
+            f"duration_strategy must be one of {_DURATION_STRATEGIES}, got {duration_strategy!r}"
+        )
 
     encoder_choice = _resolve_encoder(encoder)
     output = Path(output)
@@ -69,12 +91,20 @@ def render_from_jsonl(
         if stream.average_rate is None or float(stream.average_rate) <= 0:
             raise ValueError(f"could not determine fps of {video}")
         source_fps = float(stream.average_rate)
-        output_fps = source_fps * playback_speed
         width = stream.codec_context.width
         height = stream.codec_context.height
 
         start_frame = round(event_start * source_fps)
         end_frame = round(event_end * source_fps)  # exclusive
+        window_seconds = event_end - event_start
+
+        effective_speed, sample_stride = _resolve_duration_cap(
+            window_seconds=window_seconds,
+            playback_speed=playback_speed,
+            max_duration_seconds=max_duration_seconds,
+            duration_strategy=duration_strategy,
+        )
+        output_fps = source_fps * effective_speed
 
         detections_by_frame = _index_detections_by_frame(detections_jsonl, source_fps)
 
@@ -89,6 +119,8 @@ def render_from_jsonl(
                     continue
                 if frame_idx >= end_frame:
                     break
+                if (frame_idx - start_frame) % sample_stride != 0:
+                    continue
                 bgr = frame.to_ndarray(format="bgr24")
                 draw_detections(
                     bgr,
@@ -100,6 +132,30 @@ def render_from_jsonl(
         container.close()
 
     return output
+
+
+def _resolve_duration_cap(
+    window_seconds: float,
+    playback_speed: float,
+    max_duration_seconds: float | None,
+    duration_strategy: DurationStrategy,
+) -> tuple[float, int]:
+    """Return (effective_playback_speed, sample_stride) honouring the duration cap.
+
+    `playback_speed` is treated as a floor — we never make the clip play *slower*
+    than the caller explicitly asked for, even to stay under the cap.
+    """
+    if max_duration_seconds is None:
+        return playback_speed, 1
+    effective_duration = window_seconds / playback_speed
+    if effective_duration <= max_duration_seconds:
+        return playback_speed, 1
+
+    if duration_strategy == "timelapse":
+        return window_seconds / max_duration_seconds, 1
+    # framedrop
+    stride = math.ceil(effective_duration / max_duration_seconds)
+    return playback_speed, stride
 
 
 def _resolve_encoder(encoder: Encoder | str) -> Encoder:

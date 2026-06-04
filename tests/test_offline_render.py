@@ -272,3 +272,119 @@ def test_default_label_formatter_is_public() -> None:
         Detection(bbox=(0, 0, 10, 10), label="person", score=0.87, track_id=3)
     )
     assert text == "person #3 0.87"
+
+
+# ---------- max_duration_seconds + duration_strategy ----------
+
+
+@pytest.fixture
+def long_video_with_jsonl(tmp_path: Path) -> tuple[Path, Path]:
+    """10-second source video at 10 fps (100 frames) so we can exercise long event windows."""
+    video = tmp_path / "long.mp4"
+    dets = tmp_path / "long_dets.jsonl"
+    _write_video(video, width=64, height=64, fps=10, n_frames=100)
+    _write_jsonl(
+        dets,
+        [{"frame_idx": fi, "bbox": [10, 10, 40, 40], "label": "thing"} for fi in range(100)],
+    )
+    return video, dets
+
+
+def test_max_duration_timelapse_compresses_to_cap(
+    long_video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = long_video_with_jsonl
+    out = tmp_path / "cap_timelapse.mp4"
+    # 8 s window, cap to 2 s → speed should be 4x.
+    render_from_jsonl(
+        video, dets, 1.0, 9.0, out, max_duration_seconds=2.0, duration_strategy="timelapse"
+    )
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        n_frames = sum(1 for _ in container.decode(stream))
+        out_fps = float(stream.average_rate)
+        # All 80 source frames kept, fps quadrupled.
+        assert n_frames == 80
+        assert out_fps == pytest.approx(40.0, rel=0.02)
+
+
+def test_max_duration_framedrop_skips_frames(
+    long_video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = long_video_with_jsonl
+    out = tmp_path / "cap_drop.mp4"
+    # 8 s window, cap 2 s, framedrop → keep every 4th frame, fps unchanged.
+    render_from_jsonl(
+        video, dets, 1.0, 9.0, out, max_duration_seconds=2.0, duration_strategy="framedrop"
+    )
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        n_frames = sum(1 for _ in container.decode(stream))
+        out_fps = float(stream.average_rate)
+        # 80 source frames sampled every 4 → 20 kept.
+        assert n_frames == 20
+        assert out_fps == pytest.approx(10.0, rel=0.02)
+
+
+def test_max_duration_no_op_when_window_fits(
+    video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    video, dets = video_with_jsonl
+    no_cap = tmp_path / "no_cap.mp4"
+    with_cap = tmp_path / "loose_cap.mp4"
+    render_from_jsonl(video, dets, 1.0, 2.0, no_cap)
+    render_from_jsonl(video, dets, 1.0, 2.0, with_cap, max_duration_seconds=10.0)
+    # 1 s window, 10 s cap → cap should have no effect → byte-identical.
+    assert no_cap.read_bytes() == with_cap.read_bytes()
+
+
+def test_playback_speed_is_floor_under_cap(
+    long_video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """User asked for 2x speed; cap doesn't make sense at 4x. Cap raises further to 4x."""
+    video, dets = long_video_with_jsonl
+    out = tmp_path / "floor.mp4"
+    # 8 s window @ speed 2 = 4 s effective. Cap to 1 s → must raise speed to 8x.
+    render_from_jsonl(video, dets, 1.0, 9.0, out, playback_speed=2.0, max_duration_seconds=1.0)
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        out_fps = float(stream.average_rate)
+        assert out_fps == pytest.approx(80.0, rel=0.02)  # 10 fps x 8
+
+
+def test_playback_speed_respected_when_cap_already_fits(
+    long_video_with_jsonl: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """User speed already brings duration below the cap → cap has no effect."""
+    video, dets = long_video_with_jsonl
+    out = tmp_path / "speed_wins.mp4"
+    # 8 s window @ speed 4 = 2 s. Cap 5 s → no further compression.
+    render_from_jsonl(video, dets, 1.0, 9.0, out, playback_speed=4.0, max_duration_seconds=5.0)
+    with av.open(str(out)) as container:
+        stream = container.streams.video[0]
+        out_fps = float(stream.average_rate)
+        assert out_fps == pytest.approx(40.0, rel=0.02)
+
+
+def test_max_duration_negative_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_duration_seconds must be > 0"):
+        render_from_jsonl(
+            tmp_path / "x.mp4",
+            tmp_path / "x.jsonl",
+            0.0,
+            1.0,
+            tmp_path / "o.mp4",
+            max_duration_seconds=-1.0,
+        )
+
+
+def test_unknown_duration_strategy_raises(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duration_strategy must be one of"):
+        render_from_jsonl(
+            tmp_path / "x.mp4",
+            tmp_path / "x.jsonl",
+            0.0,
+            1.0,
+            tmp_path / "o.mp4",
+            duration_strategy="lossy",  # type: ignore[arg-type]
+        )

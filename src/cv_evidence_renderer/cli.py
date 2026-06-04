@@ -36,6 +36,16 @@ def render(
         "--playback-speed",
         help="Output playback multiplier. >1 plays faster (timelapse), <1 slower.",
     ),
+    max_duration_seconds: float | None = typer.Option(
+        None,
+        "--max-duration-seconds",
+        help="Upper bound on output duration; auto-compresses with --duration-strategy.",
+    ),
+    duration_strategy: str = typer.Option(
+        "timelapse",
+        "--duration-strategy",
+        help="How to compress when --max-duration-seconds kicks in: timelapse | framedrop.",
+    ),
 ) -> None:
     """Render a single evidence clip from a saved video + detections JSONL."""
     out = render_from_jsonl(
@@ -46,6 +56,8 @@ def render(
         output=output,
         encoder=encoder,
         playback_speed=playback_speed,
+        max_duration_seconds=max_duration_seconds,
+        duration_strategy=duration_strategy,  # type: ignore[arg-type]
     )
     typer.echo(f"Wrote {out}")
 
