@@ -1,7 +1,15 @@
-"""`render_from_jsonl` — offline batch render from saved video + detection JSONL.
+"""Offline rendering — turn a saved video + detection JSONL into an evidence MP4.
 
-This is the MVP entrypoint: read a video file and a JSONL of detections,
-trim to the event window, burn in bboxes/labels, and encode the result.
+Two public entry points:
+
+    render_clip(sources=[ClipSource(...)], output=..., ...)
+        Lower-level API that will grow to support multi-source concatenation
+        (one event spanning several video files) in the next milestone. Today
+        it accepts exactly one ClipSource.
+
+    render_from_jsonl(video, detections_jsonl, event_start, event_end, ...)
+        Thin convenience wrapper around `render_clip` for the common
+        "one event, one file" case. Backward-compatible with v0.0.1.
 """
 
 from __future__ import annotations
@@ -17,10 +25,73 @@ import av.video
 from cv_evidence_renderer.adapters import from_jsonl
 from cv_evidence_renderer.encoder.libx264 import Libx264Encoder
 from cv_evidence_renderer.overlay import LabelFormatter, draw_detections
-from cv_evidence_renderer.types import Detection, Encoder
+from cv_evidence_renderer.types import ClipSource, Detection, Encoder
 
 DurationStrategy = Literal["timelapse", "framedrop"]
 _DURATION_STRATEGIES: tuple[DurationStrategy, ...] = ("timelapse", "framedrop")
+
+
+def render_clip(
+    sources: list[ClipSource],
+    output: str | Path,
+    encoder: Encoder | str = Encoder.AUTO,
+    playback_speed: float = 1.0,
+    label_formatter: LabelFormatter | None = None,
+    max_duration_seconds: float | None = None,
+    duration_strategy: DurationStrategy = "timelapse",
+) -> Path:
+    """Render an evidence clip from one or more `ClipSource` segments.
+
+    The full evidence is the concatenation of each source's
+    `[from_seconds, to_seconds)` window, in list order, encoded as a single MP4.
+
+    Multi-source concatenation arrives in v0.1 milestone 14-15. Today exactly
+    one source is supported; passing more raises `NotImplementedError`.
+
+    Args:
+        sources: list of `ClipSource` segments (currently exactly one).
+        output: Output MP4 path.
+        encoder: `Encoder` enum value or string. `AUTO` → `LIBX264` in MVP.
+        playback_speed: Output playback multiplier (floor when a duration cap
+            also applies). Must be > 0.
+        label_formatter: Optional caption renderer per `Detection`.
+        max_duration_seconds: Optional cap on output wall-clock duration.
+        duration_strategy: `"timelapse"` or `"framedrop"` (see SPEC.md).
+
+    Returns:
+        Path to the written evidence MP4.
+
+    Raises:
+        ValueError: empty `sources`, bad knob values.
+        NotImplementedError: more than one source (v0.1 next milestone) or an
+            encoder not yet supported.
+    """
+    if not sources:
+        raise ValueError("render_clip needs at least one ClipSource")
+    if len(sources) > 1:
+        raise NotImplementedError("multi-source concatenation ships in v0.1 milestone 14-15")
+    if playback_speed <= 0:
+        raise ValueError(f"playback_speed must be > 0, got {playback_speed}")
+    if max_duration_seconds is not None and max_duration_seconds <= 0:
+        raise ValueError(f"max_duration_seconds must be > 0, got {max_duration_seconds}")
+    if duration_strategy not in _DURATION_STRATEGIES:
+        raise ValueError(
+            f"duration_strategy must be one of {_DURATION_STRATEGIES}, got {duration_strategy!r}"
+        )
+
+    encoder_choice = _resolve_encoder(encoder)
+    output = Path(output)
+
+    _render_single_source(
+        source=sources[0],
+        output=output,
+        encoder_choice=encoder_choice,
+        playback_speed=playback_speed,
+        label_formatter=label_formatter,
+        max_duration_seconds=max_duration_seconds,
+        duration_strategy=duration_strategy,
+    )
+    return output
 
 
 def render_from_jsonl(
@@ -35,68 +106,69 @@ def render_from_jsonl(
     max_duration_seconds: float | None = None,
     duration_strategy: DurationStrategy = "timelapse",
 ) -> Path:
-    """Render an evidence clip from a saved video + JSONL detections.
+    """Render an evidence clip from one video file + one detections JSONL.
 
-    Args:
-        video: Path to input video file (anything PyAV can decode).
-        detections_jsonl: Path to JSONL file with one detection per line.
-        event_start: Start of event window, seconds from video start.
-        event_end: End of event window, seconds from video start. Exclusive.
-        output: Output MP4 path.
-        encoder: One of the `Encoder` enum values. `AUTO` resolves to
-            `LIBX264` in MVP; NVENC variants raise `NotImplementedError`.
-        playback_speed: Output playback multiplier. `2.0` writes the same
-            frames at double fps → output plays in half the wall-clock time.
-            Must be > 0. Honoured as a *floor* when `max_duration_seconds`
-            also kicks in (we never slow output back down).
-        label_formatter: Optional callable returning the caption shown above
-            each bbox. Defaults to `overlay.default_label_formatter`.
-        max_duration_seconds: Upper bound on output wall-clock duration. If
-            the window (after `playback_speed`) would exceed this, the clip
-            is compressed by the chosen `duration_strategy`. None = no cap.
-        duration_strategy: How to compress when the cap kicks in.
-            `"timelapse"` (default) keeps every frame but raises output fps;
-            `"framedrop"` keeps fps but samples one frame every N to stay
-            under the cap.
-
-    Returns:
-        Path to the written evidence MP4.
-
-    Raises:
-        ValueError: invalid event window, non-positive playback_speed /
-            max_duration_seconds, or unknown duration_strategy.
-        NotImplementedError: requested encoder is not available in MVP.
+    Convenience wrapper around `render_clip`. Same knobs, same semantics; the
+    only difference is the input shape (positional source/window args instead
+    of a list of `ClipSource`).
     """
+    # event_start/end validation happens here so the error mentions these names
+    # rather than the inner ClipSource.from_seconds/to_seconds.
     if event_start < 0:
         raise ValueError(f"event_start must be >= 0, got {event_start}")
     if event_end <= event_start:
         raise ValueError(
             f"event_end must be > event_start; got start={event_start}, end={event_end}"
         )
-    if playback_speed <= 0:
-        raise ValueError(f"playback_speed must be > 0, got {playback_speed}")
-    if max_duration_seconds is not None and max_duration_seconds <= 0:
-        raise ValueError(f"max_duration_seconds must be > 0, got {max_duration_seconds}")
-    if duration_strategy not in _DURATION_STRATEGIES:
-        raise ValueError(
-            f"duration_strategy must be one of {_DURATION_STRATEGIES}, got {duration_strategy!r}"
-        )
 
-    encoder_choice = _resolve_encoder(encoder)
-    output = Path(output)
+    return render_clip(
+        sources=[
+            ClipSource(
+                video=video,
+                detections=detections_jsonl,
+                from_seconds=event_start,
+                to_seconds=event_end,
+            )
+        ],
+        output=output,
+        encoder=encoder,
+        playback_speed=playback_speed,
+        label_formatter=label_formatter,
+        max_duration_seconds=max_duration_seconds,
+        duration_strategy=duration_strategy,
+    )
 
-    container = av.open(str(video))
+
+# ----------------------------------------------------------------------------
+# internals
+# ----------------------------------------------------------------------------
+
+
+def _render_single_source(
+    source: ClipSource,
+    output: Path,
+    encoder_choice: Encoder,
+    playback_speed: float,
+    label_formatter: LabelFormatter | None,
+    max_duration_seconds: float | None,
+    duration_strategy: DurationStrategy,
+) -> None:
+    container = av.open(str(source.video))
     try:
         stream = container.streams.video[0]
         if stream.average_rate is None or float(stream.average_rate) <= 0:
-            raise ValueError(f"could not determine fps of {video}")
+            raise ValueError(f"could not determine fps of {source.video}")
         source_fps = float(stream.average_rate)
         width = stream.codec_context.width
         height = stream.codec_context.height
 
-        start_frame = round(event_start * source_fps)
-        end_frame = round(event_end * source_fps)  # exclusive
-        window_seconds = event_end - event_start
+        start_frame = round(source.from_seconds * source_fps)
+        end_frame: int | None = (
+            round(source.to_seconds * source_fps) if source.to_seconds is not None else None
+        )
+        window_seconds = (
+            (source.to_seconds - source.from_seconds) if source.to_seconds is not None else None
+        )
 
         effective_speed, sample_stride = _resolve_duration_cap(
             window_seconds=window_seconds,
@@ -106,18 +178,22 @@ def render_from_jsonl(
         )
         output_fps = source_fps * effective_speed
 
-        detections_by_frame = _index_detections_by_frame(detections_jsonl, source_fps)
+        detections_by_frame = (
+            _index_detections_by_frame(source.detections, source_fps)
+            if source.detections is not None
+            else {}
+        )
 
         if encoder_choice == Encoder.LIBX264:
             encoder_obj = Libx264Encoder(output, width=width, height=height, fps=output_fps)
-        else:  # defensive — _resolve_encoder should have raised already
+        else:  # defensive
             raise NotImplementedError(f"encoder {encoder_choice} not supported in MVP")
 
         with encoder_obj:
             for frame_idx, frame in enumerate(container.decode(stream)):
                 if frame_idx < start_frame:
                     continue
-                if frame_idx >= end_frame:
+                if end_frame is not None and frame_idx >= end_frame:
                     break
                 if (frame_idx - start_frame) % sample_stride != 0:
                     continue
@@ -131,11 +207,19 @@ def render_from_jsonl(
     finally:
         container.close()
 
-    return output
+
+def _resolve_encoder(encoder: Encoder | str) -> Encoder:
+    """Normalise an encoder choice and reject ones not available in MVP."""
+    choice = Encoder(encoder) if isinstance(encoder, str) else encoder
+    if choice == Encoder.AUTO:
+        return Encoder.LIBX264
+    if choice == Encoder.LIBX264:
+        return choice
+    raise NotImplementedError(f"encoder {choice.value} is not supported in MVP — use libx264")
 
 
 def _resolve_duration_cap(
-    window_seconds: float,
+    window_seconds: float | None,
     playback_speed: float,
     max_duration_seconds: float | None,
     duration_strategy: DurationStrategy,
@@ -144,8 +228,11 @@ def _resolve_duration_cap(
 
     `playback_speed` is treated as a floor — we never make the clip play *slower*
     than the caller explicitly asked for, even to stay under the cap.
+
+    When `window_seconds` is unknown (`to_seconds=None`) the cap is ignored —
+    we can't know in advance how long the source will be.
     """
-    if max_duration_seconds is None:
+    if max_duration_seconds is None or window_seconds is None:
         return playback_speed, 1
     effective_duration = window_seconds / playback_speed
     if effective_duration <= max_duration_seconds:
@@ -156,16 +243,6 @@ def _resolve_duration_cap(
     # framedrop
     stride = math.ceil(effective_duration / max_duration_seconds)
     return playback_speed, stride
-
-
-def _resolve_encoder(encoder: Encoder | str) -> Encoder:
-    """Normalise an encoder choice and reject ones not available in MVP."""
-    choice = Encoder(encoder) if isinstance(encoder, str) else encoder
-    if choice == Encoder.AUTO:
-        return Encoder.LIBX264
-    if choice == Encoder.LIBX264:
-        return choice
-    raise NotImplementedError(f"encoder {choice.value} is not supported in MVP — use libx264")
 
 
 def _index_detections_by_frame(

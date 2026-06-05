@@ -1,9 +1,10 @@
-"""Core data types — `Detection`, `Event`, encoder enums."""
+"""Core data types — `Detection`, `Event`, `ClipSource`, encoder enums."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 
 class Encoder(str, Enum):
@@ -48,3 +49,36 @@ class Event:
     end_seconds: float
     label: str | None = None
     frames: list[FrameDetections] = field(default_factory=list)
+
+
+@dataclass
+class ClipSource:
+    """One contiguous segment of source footage feeding into a `render_clip` call.
+
+    A clip is built from one or more `ClipSource`s in chronological order. Each
+    source contributes the half-open window `[from_seconds, to_seconds)` of its
+    own video file, optionally with its own detections JSONL.
+
+    Args:
+        video: Path to the source video file.
+        detections: Path to a detections JSONL keyed against *this* video's
+            local timeline (frame_idx 0 = first frame of `video`). `None` skips
+            the overlay layer for this segment.
+        from_seconds: Inclusive start, seconds from the start of `video`.
+        to_seconds: Exclusive end. `None` means "decode to EOF" — useful when
+            a source ends partway and the next ClipSource picks up.
+    """
+
+    video: str | Path
+    detections: str | Path | None = None
+    from_seconds: float = 0.0
+    to_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.from_seconds < 0:
+            raise ValueError(f"from_seconds must be >= 0, got {self.from_seconds}")
+        if self.to_seconds is not None and self.to_seconds <= self.from_seconds:
+            raise ValueError(
+                f"to_seconds must be > from_seconds; got "
+                f"from={self.from_seconds}, to={self.to_seconds}"
+            )
