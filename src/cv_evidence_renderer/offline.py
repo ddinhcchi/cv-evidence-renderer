@@ -2,10 +2,10 @@
 
 Two public entry points:
 
-    render_clip(sources=[ClipSource(...)], output=..., ...)
-        Lower-level API that will grow to support multi-source concatenation
-        (one event spanning several video files) in the next milestone. Today
-        it accepts exactly one ClipSource.
+    render_clip(sources=[ClipSource(...), ...], output=..., ...)
+        Lower-level API. The output is the concatenation of each source's
+        `[from_seconds, to_seconds)` window, encoded as a single MP4. All
+        sources must share width, height, and (to within 1%) fps.
 
     render_from_jsonl(video, detections_jsonl, event_start, event_end, ...)
         Thin convenience wrapper around `render_clip` for the common
@@ -15,6 +15,7 @@ Two public entry points:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +30,7 @@ from cv_evidence_renderer.types import ClipSource, Detection, Encoder
 
 DurationStrategy = Literal["timelapse", "framedrop"]
 _DURATION_STRATEGIES: tuple[DurationStrategy, ...] = ("timelapse", "framedrop")
+_FPS_TOLERANCE = 0.01  # 1% relative tolerance when comparing source fps values
 
 
 def render_clip(
@@ -42,34 +44,33 @@ def render_clip(
 ) -> Path:
     """Render an evidence clip from one or more `ClipSource` segments.
 
-    The full evidence is the concatenation of each source's
-    `[from_seconds, to_seconds)` window, in list order, encoded as a single MP4.
-
-    Multi-source concatenation arrives in v0.1 milestone 14-15. Today exactly
-    one source is supported; passing more raises `NotImplementedError`.
+    The output is the concatenation of each source's `[from_seconds, to_seconds)`
+    window, in list order, encoded as a single MP4. All sources must share
+    `width`, `height`, and (to within 1%) fps — otherwise the encoder can't
+    write a single stream without resampling, which is out of scope.
 
     Args:
-        sources: list of `ClipSource` segments (currently exactly one).
+        sources: list of `ClipSource` segments. Must be non-empty.
         output: Output MP4 path.
         encoder: `Encoder` enum value or string. `AUTO` → `LIBX264` in MVP.
         playback_speed: Output playback multiplier (floor when a duration cap
             also applies). Must be > 0.
         label_formatter: Optional caption renderer per `Detection`.
-        max_duration_seconds: Optional cap on output wall-clock duration.
-        duration_strategy: `"timelapse"` or `"framedrop"` (see SPEC.md).
+        max_duration_seconds: Optional cap on output wall-clock duration. The
+            cap is computed against the *total* window across all sources;
+            ignored if any source has `to_seconds=None`.
+        duration_strategy: `"timelapse"` or `"framedrop"`.
 
     Returns:
         Path to the written evidence MP4.
 
     Raises:
-        ValueError: empty `sources`, bad knob values.
-        NotImplementedError: more than one source (v0.1 next milestone) or an
-            encoder not yet supported.
+        ValueError: empty `sources`, bad knob values, or incompatible source
+            metadata (dims/fps).
+        NotImplementedError: encoder not yet supported.
     """
     if not sources:
         raise ValueError("render_clip needs at least one ClipSource")
-    if len(sources) > 1:
-        raise NotImplementedError("multi-source concatenation ships in v0.1 milestone 14-15")
     if playback_speed <= 0:
         raise ValueError(f"playback_speed must be > 0, got {playback_speed}")
     if max_duration_seconds is not None and max_duration_seconds <= 0:
@@ -82,15 +83,39 @@ def render_clip(
     encoder_choice = _resolve_encoder(encoder)
     output = Path(output)
 
-    _render_single_source(
-        source=sources[0],
-        output=output,
-        encoder_choice=encoder_choice,
+    metas = [_probe_source(src) for src in sources]
+    _check_sources_compatible(metas)
+    canonical = metas[0]
+
+    total_window = _total_window_seconds(sources)
+    effective_speed, sample_stride = _resolve_duration_cap(
+        window_seconds=total_window,
         playback_speed=playback_speed,
-        label_formatter=label_formatter,
         max_duration_seconds=max_duration_seconds,
         duration_strategy=duration_strategy,
     )
+    output_fps = canonical.fps * effective_speed
+
+    if encoder_choice != Encoder.LIBX264:  # defensive — _resolve_encoder should have raised
+        raise NotImplementedError(f"encoder {encoder_choice} not supported in MVP")
+
+    encoder_obj = Libx264Encoder(
+        output, width=canonical.width, height=canonical.height, fps=output_fps
+    )
+
+    with encoder_obj:
+        # Single counter across all sources so the framedrop stride is uniform.
+        kept_input_index = 0
+        for src, meta in zip(sources, metas, strict=True):
+            kept_input_index = _decode_source_into_encoder(
+                source=src,
+                meta=meta,
+                encoder_obj=encoder_obj,
+                label_formatter=label_formatter,
+                sample_stride=sample_stride,
+                kept_input_index=kept_input_index,
+            )
+
     return output
 
 
@@ -144,68 +169,97 @@ def render_from_jsonl(
 # ----------------------------------------------------------------------------
 
 
-def _render_single_source(
+@dataclass(frozen=True)
+class _SourceMeta:
+    fps: float
+    width: int
+    height: int
+
+
+def _probe_source(src: ClipSource) -> _SourceMeta:
+    """Open the source just long enough to read width/height/fps, then close."""
+    with av.open(str(src.video)) as container:
+        stream = container.streams.video[0]
+        if stream.average_rate is None or float(stream.average_rate) <= 0:
+            raise ValueError(f"could not determine fps of {src.video}")
+        return _SourceMeta(
+            fps=float(stream.average_rate),
+            width=stream.codec_context.width,
+            height=stream.codec_context.height,
+        )
+
+
+def _check_sources_compatible(metas: list[_SourceMeta]) -> None:
+    first = metas[0]
+    for i, m in enumerate(metas[1:], start=1):
+        if (m.width, m.height) != (first.width, first.height):
+            raise ValueError(
+                f"source {i} dimensions ({m.width}x{m.height}) do not match "
+                f"source 0 ({first.width}x{first.height}) — resizing is out of scope"
+            )
+        if abs(m.fps - first.fps) / first.fps > _FPS_TOLERANCE:
+            raise ValueError(
+                f"source {i} fps ({m.fps:.3f}) differs from source 0 ({first.fps:.3f}) "
+                f"by more than {_FPS_TOLERANCE * 100:.0f}% — resampling is out of scope"
+            )
+
+
+def _total_window_seconds(sources: list[ClipSource]) -> float | None:
+    """Sum of all source windows in seconds, or None if any source has open end."""
+    total = 0.0
+    for src in sources:
+        if src.to_seconds is None:
+            return None
+        total += src.to_seconds - src.from_seconds
+    return total
+
+
+def _decode_source_into_encoder(
     source: ClipSource,
-    output: Path,
-    encoder_choice: Encoder,
-    playback_speed: float,
+    meta: _SourceMeta,
+    encoder_obj: Libx264Encoder,
     label_formatter: LabelFormatter | None,
-    max_duration_seconds: float | None,
-    duration_strategy: DurationStrategy,
-) -> None:
+    sample_stride: int,
+    kept_input_index: int,
+) -> int:
+    """Decode one source's window and feed kept frames to the encoder.
+
+    Returns the updated `kept_input_index` so the next source continues the
+    framedrop stride seamlessly.
+    """
+    start_frame = round(source.from_seconds * meta.fps)
+    end_frame: int | None = (
+        round(source.to_seconds * meta.fps) if source.to_seconds is not None else None
+    )
+    detections_by_frame = (
+        _index_detections_by_frame(source.detections, meta.fps)
+        if source.detections is not None
+        else {}
+    )
+
     container = av.open(str(source.video))
     try:
         stream = container.streams.video[0]
-        if stream.average_rate is None or float(stream.average_rate) <= 0:
-            raise ValueError(f"could not determine fps of {source.video}")
-        source_fps = float(stream.average_rate)
-        width = stream.codec_context.width
-        height = stream.codec_context.height
-
-        start_frame = round(source.from_seconds * source_fps)
-        end_frame: int | None = (
-            round(source.to_seconds * source_fps) if source.to_seconds is not None else None
-        )
-        window_seconds = (
-            (source.to_seconds - source.from_seconds) if source.to_seconds is not None else None
-        )
-
-        effective_speed, sample_stride = _resolve_duration_cap(
-            window_seconds=window_seconds,
-            playback_speed=playback_speed,
-            max_duration_seconds=max_duration_seconds,
-            duration_strategy=duration_strategy,
-        )
-        output_fps = source_fps * effective_speed
-
-        detections_by_frame = (
-            _index_detections_by_frame(source.detections, source_fps)
-            if source.detections is not None
-            else {}
-        )
-
-        if encoder_choice == Encoder.LIBX264:
-            encoder_obj = Libx264Encoder(output, width=width, height=height, fps=output_fps)
-        else:  # defensive
-            raise NotImplementedError(f"encoder {encoder_choice} not supported in MVP")
-
-        with encoder_obj:
-            for frame_idx, frame in enumerate(container.decode(stream)):
-                if frame_idx < start_frame:
-                    continue
-                if end_frame is not None and frame_idx >= end_frame:
-                    break
-                if (frame_idx - start_frame) % sample_stride != 0:
-                    continue
-                bgr = frame.to_ndarray(format="bgr24")
-                draw_detections(
-                    bgr,
-                    detections_by_frame.get(frame_idx, []),
-                    label_formatter=label_formatter,
-                )
-                encoder_obj.write(bgr)
+        for frame_idx, frame in enumerate(container.decode(stream)):
+            if frame_idx < start_frame:
+                continue
+            if end_frame is not None and frame_idx >= end_frame:
+                break
+            if kept_input_index % sample_stride != 0:
+                kept_input_index += 1
+                continue
+            bgr = frame.to_ndarray(format="bgr24")
+            draw_detections(
+                bgr,
+                detections_by_frame.get(frame_idx, []),
+                label_formatter=label_formatter,
+            )
+            encoder_obj.write(bgr)
+            kept_input_index += 1
     finally:
         container.close()
+
+    return kept_input_index
 
 
 def _resolve_encoder(encoder: Encoder | str) -> Encoder:
@@ -229,8 +283,8 @@ def _resolve_duration_cap(
     `playback_speed` is treated as a floor — we never make the clip play *slower*
     than the caller explicitly asked for, even to stay under the cap.
 
-    When `window_seconds` is unknown (`to_seconds=None`) the cap is ignored —
-    we can't know in advance how long the source will be.
+    When `window_seconds` is unknown (any source has `to_seconds=None`) the cap
+    is ignored — we can't know in advance how long the source will be.
     """
     if max_duration_seconds is None or window_seconds is None:
         return playback_speed, 1
