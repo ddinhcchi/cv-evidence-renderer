@@ -52,6 +52,23 @@ class Event:
 
 
 @dataclass
+class Clip:
+    """A single output evidence file: a list of `ClipSource` segments plus per-clip knobs.
+
+    Used by `render_clips` to render many evidence files in one call. When
+    several clips reference the same source file, the batch decodes that file
+    once and dispatches frames to each clip's encoder.
+    """
+
+    sources: list[ClipSource]
+    output: str | Path
+    playback_speed: float = 1.0
+    label_formatter: object = None  # actually overlay.LabelFormatter | None
+    max_duration_seconds: float | None = None
+    duration_strategy: str = "timelapse"
+
+
+@dataclass
 class ClipSource:
     """One contiguous segment of source footage feeding into a `render_clip` call.
 

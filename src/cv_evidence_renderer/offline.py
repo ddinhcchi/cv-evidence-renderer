@@ -26,7 +26,7 @@ import av.video
 from cv_evidence_renderer.adapters import from_jsonl
 from cv_evidence_renderer.encoder.libx264 import Libx264Encoder
 from cv_evidence_renderer.overlay import LabelFormatter, draw_detections
-from cv_evidence_renderer.types import ClipSource, Detection, Encoder
+from cv_evidence_renderer.types import Clip, ClipSource, Detection, Encoder
 
 DurationStrategy = Literal["timelapse", "framedrop"]
 _DURATION_STRATEGIES: tuple[DurationStrategy, ...] = ("timelapse", "framedrop")
@@ -117,6 +117,77 @@ def render_clip(
             )
 
     return output
+
+
+def render_clips(
+    clips: list[Clip],
+    encoder: Encoder | str = Encoder.AUTO,
+) -> list[Path]:
+    """Render many evidence clips in a single batch call.
+
+    Returns the output paths in the same order as `clips`.
+
+    When several clips reference the same source video file (the very common
+    "1 long recording, N events" case) the batch opens and decodes that file
+    only once, dispatching each decoded frame to every clip that wants it.
+    Clips with multiple sources or with a unique source path fall back to the
+    regular `render_clip` path.
+
+    Args:
+        clips: list of `Clip` objects (must be non-empty).
+        encoder: shared encoder choice for every clip.
+
+    Raises:
+        ValueError: empty `clips`, or per-clip knob validation upstream.
+    """
+    if not clips:
+        raise ValueError("render_clips needs at least one Clip")
+
+    encoder_choice = _resolve_encoder(encoder)
+
+    # Index clips by their order so we can return paths in input order.
+    outputs: dict[int, Path] = {}
+
+    # Group single-source clips by their source path; everything else is rendered standalone.
+    shared: dict[Path, list[tuple[int, Clip]]] = {}
+    standalone: list[tuple[int, Clip]] = []
+    for i, clip in enumerate(clips):
+        if len(clip.sources) == 1:
+            key = Path(clip.sources[0].video).resolve()
+            shared.setdefault(key, []).append((i, clip))
+        else:
+            standalone.append((i, clip))
+
+    # Run standalone (multi-source) clips through the regular path.
+    for i, clip in standalone:
+        outputs[i] = render_clip(
+            sources=clip.sources,
+            output=clip.output,
+            encoder=encoder,
+            playback_speed=clip.playback_speed,
+            label_formatter=clip.label_formatter,  # type: ignore[arg-type]
+            max_duration_seconds=clip.max_duration_seconds,
+            duration_strategy=clip.duration_strategy,  # type: ignore[arg-type]
+        )
+
+    # For each unique single-source path: decode once if shared, otherwise standalone.
+    for source_path, group in shared.items():
+        if len(group) == 1:
+            i, clip = group[0]
+            outputs[i] = render_clip(
+                sources=clip.sources,
+                output=clip.output,
+                encoder=encoder,
+                playback_speed=clip.playback_speed,
+                label_formatter=clip.label_formatter,  # type: ignore[arg-type]
+                max_duration_seconds=clip.max_duration_seconds,
+                duration_strategy=clip.duration_strategy,  # type: ignore[arg-type]
+            )
+        else:
+            paths = _render_shared_source(source_path, group, encoder_choice)
+            outputs.update(paths)
+
+    return [outputs[i] for i in range(len(clips))]
 
 
 def render_from_jsonl(
@@ -260,6 +331,112 @@ def _decode_source_into_encoder(
         container.close()
 
     return kept_input_index
+
+
+def _render_shared_source(
+    source_path: Path,
+    group: list[tuple[int, Clip]],
+    encoder_choice: Encoder,
+) -> dict[int, Path]:
+    """Decode `source_path` exactly once, dispatch frames to every clip in `group`.
+
+    Each clip gets its own encoder, its own framedrop stride counter, and its
+    own overlay (label_formatter + per-source detections). The decoded frame is
+    copied per consumer so overlays don't bleed across outputs.
+    """
+    # Probe metadata once. All clips share width/height/source_fps because they
+    # share the source file; per-clip output fps still differs via playback_speed.
+    meta = _probe_source(ClipSource(video=source_path))
+
+    if encoder_choice != Encoder.LIBX264:  # defensive
+        raise NotImplementedError(f"encoder {encoder_choice} not supported in MVP")
+
+    # Build per-clip state.
+    states: list[_ClipState] = []
+    for clip_index, clip in group:
+        src = clip.sources[0]
+        window_seconds = (src.to_seconds - src.from_seconds) if src.to_seconds is not None else None
+        effective_speed, sample_stride = _resolve_duration_cap(
+            window_seconds=window_seconds,
+            playback_speed=clip.playback_speed,
+            max_duration_seconds=clip.max_duration_seconds,
+            duration_strategy=clip.duration_strategy,  # type: ignore[arg-type]
+        )
+        detections_by_frame = (
+            _index_detections_by_frame(src.detections, meta.fps)
+            if src.detections is not None
+            else {}
+        )
+        encoder_obj = Libx264Encoder(
+            clip.output, width=meta.width, height=meta.height, fps=meta.fps * effective_speed
+        )
+        encoder_obj.open()
+        states.append(
+            _ClipState(
+                clip_index=clip_index,
+                output_path=Path(clip.output),
+                label_formatter=clip.label_formatter,  # type: ignore[arg-type]
+                start_frame=round(src.from_seconds * meta.fps),
+                end_frame=(
+                    round(src.to_seconds * meta.fps) if src.to_seconds is not None else None
+                ),
+                stride=sample_stride,
+                in_window_count=0,
+                detections_by_frame=detections_by_frame,
+                encoder=encoder_obj,
+            )
+        )
+
+    # Single decode pass.
+    container = av.open(str(source_path))
+    try:
+        stream = container.streams.video[0]
+        for frame_idx, frame in enumerate(container.decode(stream)):
+            consumers = [
+                s
+                for s in states
+                if s.start_frame <= frame_idx and (s.end_frame is None or frame_idx < s.end_frame)
+            ]
+            if not consumers:
+                # Early-exit when every clip is past its end_frame.
+                if all(s.end_frame is not None and frame_idx >= s.end_frame for s in states):
+                    break
+                continue
+
+            bgr_original = frame.to_ndarray(format="bgr24")
+            for state in consumers:
+                if state.in_window_count % state.stride != 0:
+                    state.in_window_count += 1
+                    continue
+                bgr = bgr_original.copy()  # don't let overlays bleed across encoders
+                draw_detections(
+                    bgr,
+                    state.detections_by_frame.get(frame_idx, []),
+                    label_formatter=state.label_formatter,
+                )
+                state.encoder.write(bgr)
+                state.in_window_count += 1
+    finally:
+        container.close()
+        for state in states:
+            state.encoder.close()
+
+    return {state.clip_index: state.output_path for state in states}
+
+
+@dataclass
+class _ClipState:
+    """Per-clip mutable bookkeeping during a shared-source decode pass."""
+
+    clip_index: int
+    output_path: Path
+    label_formatter: LabelFormatter | None
+    start_frame: int
+    end_frame: int | None
+    stride: int
+    in_window_count: int
+    detections_by_frame: dict[int, list[Detection]]
+    encoder: Libx264Encoder
 
 
 def _resolve_encoder(encoder: Encoder | str) -> Encoder:
