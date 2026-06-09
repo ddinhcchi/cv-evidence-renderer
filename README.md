@@ -6,7 +6,7 @@ The missing **evidence-clip layer** between your detector and storage. Point it 
 
 > The GIF above is rendered through `cv-evidence-renderer` itself — synthetic scene, synthetic detections, real output. Regenerate any time with `python scripts/make_demo_gif.py`.
 
-> **Status: v0.0.1 — offline mode works end-to-end** (decode → bbox burn-in → libx264 trim). Live RTSP recording, ring buffer, and NVENC encoding are designed but not yet implemented (see Roadmap).
+> **Status: v0.1 — offline mode works end-to-end** with cross-file concat, batch rendering, playback speed, duration cap, and per-clip caption customisation. Live RTSP recording, ring buffer, and NVENC encoding are designed but not yet implemented (see Roadmap).
 
 ---
 
@@ -24,17 +24,22 @@ So every team hand-rolls OpenCV + an FFmpeg subprocess, ships the bug to prod, a
 
 ## What it does (and doesn't)
 
-✅ **Working today (v0.0.1):**
+✅ **Working today (v0.1):**
 - **Offline mode**: re-render evidence from a saved video + detections JSONL with event-window trim
+- **Multi-source events**: one event window spanning several source files (NVR / CCTV segmented recordings cut at hour boundaries) — see `render_clip` with multiple `ClipSource` segments
+- **Batch rendering**: `render_clips` writes N evidence files in one call; clips that share a source video are decoded *once*, dispatched to each clip's encoder
 - **Bounding-box / label burn-in** before encode (so the evidence file *is* the annotated version)
+- **Per-clip caption customisation** via `label_formatter` callable; default formatter exposed for composition
+- **Playback speed control** (`playback_speed`) and **output duration cap** (`max_duration_seconds`) with `timelapse` or `framedrop` strategy
 - **libx264** CPU encoding via PyAV — works on Mac, Linux, Windows with no GPU
 - **First-class interop** with [`supervision.Detections`](https://supervision.roboflow.com/) and Ultralytics YOLO `Results` — also accepts raw JSONL
-- Python library + Typer CLI (`cv-evidence render ...`)
+- Python library + Typer CLI (`cv-evidence render ...` with `--playback-speed`, `--max-duration-seconds`, `--duration-strategy`)
 
 🚧 **Designed, not yet implemented (see Roadmap):**
 - **NVENC** GPU encoding (H.264 / H.265) — v0.2
 - **Live mode**: threaded RTSP reader → ring buffer → `trigger_event()` flushes evidence — v0.2
 - **Multi-stream** parallel via shared encoder pool — v0.3
+- **Plugin overlays** for custom lines, points, anchors, distance vectors, zone polygons — v0.3
 
 🚫 **Does not (by design):**
 - Detection / tracking — bring your own (YOLO, Detectron2, anything that produces bboxes)
@@ -101,7 +106,52 @@ frame_detections = [from_supervision(det, frame_idx=0)]
 
 Both adapters require the optional `[supervision]` extra (`pip install cv-evidence-renderer[supervision]`).
 
-### Use case D: live RTSP recorder (v0.2 — not yet implemented)
+### Use case D: one event spanning two NVR files (cross-file concat)
+
+```python
+from cv_evidence_renderer import ClipSource, render_clip
+
+# A violation at 22:59:30 lives across two hour-segmented recordings.
+render_clip(
+    sources=[
+        ClipSource(video="cam01_22-00.mp4", detections="cam01_22-00.jsonl",
+                   from_seconds=1770, to_seconds=1800),  # last 30 s of file A
+        ClipSource(video="cam01_23-00.mp4", detections="cam01_23-00.jsonl",
+                   from_seconds=0, to_seconds=90),       # first 90 s of file B
+    ],
+    output="evidence/violation_cross_file.mp4",
+    label_formatter=lambda d: f"{d.label.upper()} #{d.track_id}",
+)
+```
+
+All sources must share width, height, and (within 1%) fps; otherwise the call
+raises a clear `ValueError`. The output is one continuous MP4 with detections
+overlaid on each segment from its own JSONL.
+
+### Use case E: batch render with playback speed and duration cap
+
+```python
+from cv_evidence_renderer import Clip, ClipSource, render_clips
+
+# Ten events from the same 4-hour recording. The source is decoded once.
+events = [(60, 75), (340, 360), (812, 830), ...]  # (start, end) per event
+
+render_clips(
+    clips=[
+        Clip(
+            sources=[ClipSource(video="day_03.mp4", detections="day_03.jsonl",
+                                from_seconds=start, to_seconds=end)],
+            output=f"evidence/event_{i:03d}.mp4",
+            playback_speed=1.0,
+            max_duration_seconds=15,        # cap each clip at 15 s
+            duration_strategy="timelapse",  # auto fast-forward if longer
+        )
+        for i, (start, end) in enumerate(events)
+    ],
+)
+```
+
+### Use case F: live RTSP recorder (v0.2 — not yet implemented)
 
 ```python
 # This is the planned API. EvidenceRecorder currently raises NotImplementedError.
@@ -197,6 +247,9 @@ See [COMPETITORS.md](COMPETITORS.md) for the full research write-up.
 |---|---|---|---|---|
 | Python-only install | ✅ | ✅ | ❌ (needs DeepStream SDK) | ✅ |
 | Event-window trim (offline) | ✅ | ❌ | ✅ (C only) | ✅ |
+| **Cross-file event concat** (NVR-style split files) | ✅ | ❌ | ❌ | ❌ |
+| **Decode-once batch** for N events on one source | ✅ | ❌ | ❌ | ❌ |
+| Output duration cap (timelapse / framedrop) | ✅ | ❌ | ❌ | ❌ |
 | Bbox burn-in into evidence | ✅ | ✅ (excellent) | ⚠️ (bug since 6.4) | ❌ |
 | supervision interop | ✅ | — | ❌ | ❌ |
 | Ultralytics YOLO adapter | ✅ | ✅ (via `from_ultralytics`) | ❌ | ❌ |
