@@ -18,7 +18,7 @@ Every CV team shipping to production hits the same wall: the detector fires, and
 - DeepStream's **Smart Record** is the official NVIDIA answer — but it has [no Python bindings](https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682) (NVIDIA staff confirmed), and bbox burn-in [has been broken since 6.4](https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732).
 - The canonical [PyImageSearch KeyClipWriter](https://pyimagesearch.com/2016/02/29/saving-key-event-video-clips-with-opencv/) ring-buffer pattern is detection-agnostic, OpenCV-only, and isn't a library.
 
-So every team hand-rolls OpenCV + an FFmpeg subprocess, ships the bug to prod, and writes it again on the next project. This repo is the library version of that pattern — done once, done right, with GPU encoding included.
+So every team hand-rolls OpenCV + an FFmpeg subprocess, ships the bug to prod, and writes it again on the next project. This repo is the library version of that pattern — done once, done right, with the GPU encoding path designed for v0.2.
 
 ---
 
@@ -164,7 +164,7 @@ recorder = EvidenceRecorder(
     encoder="nvenc_h264",  # NVENC also v0.2
 )
 recorder.start()
-# ... see SPEC.md for the full design.
+# ... see the v0.2 roadmap issue for the full design.
 ```
 
 ---
@@ -205,18 +205,19 @@ CPU-only libx264 on M4 already runs faster than realtime up to 1080p; NVENC on a
 
 ### Code layout
 
-| File | Responsibility |
-|---|---|
-| `src/cv_evidence_renderer/recorder.py` | `EvidenceRecorder` — live RTSP + ring buffer + trigger API |
-| `src/cv_evidence_renderer/offline.py` | `render_from_jsonl()` — re-render from saved video |
-| `src/cv_evidence_renderer/buffer.py` | Ring buffer with keyframe-aware seek |
-| `src/cv_evidence_renderer/encoder/nvenc.py` | PyAV NVENC wrapper |
-| `src/cv_evidence_renderer/encoder/libx264.py` | Fallback CPU encode |
-| `src/cv_evidence_renderer/overlay.py` | Bbox burn-in (cv2; supervision-compatible) |
-| `src/cv_evidence_renderer/io/rtsp.py` | Threaded RTSP reader, auto-reconnect |
-| `src/cv_evidence_renderer/adapters.py` | `sv.Detections` ↔ internal format ↔ raw JSONL |
-| `src/cv_evidence_renderer/pool.py` | Multi-stream encoder pool |
-| `src/cv_evidence_renderer/cli.py` | Typer entrypoint |
+| File | Responsibility | Status |
+|---|---|---|
+| `src/cv_evidence_renderer/offline.py` | `render_clip()`, `render_clips()`, `render_from_jsonl()` | ✅ |
+| `src/cv_evidence_renderer/overlay.py` | Bbox + label burn-in (cv2; supervision-compatible) | ✅ |
+| `src/cv_evidence_renderer/encoder/libx264.py` | libx264 CPU encode via PyAV | ✅ |
+| `src/cv_evidence_renderer/adapters.py` | JSONL / `sv.Detections` / Ultralytics `Results` → `FrameDetections` | ✅ |
+| `src/cv_evidence_renderer/types.py` | `ClipSource`, `Clip`, `Detection`, `FrameDetections`, `Encoder` | ✅ |
+| `src/cv_evidence_renderer/cli.py` | Typer entrypoint | ✅ |
+| `src/cv_evidence_renderer/encoder/nvenc.py` | PyAV NVENC wrapper | 🚧 v0.2 stub |
+| `src/cv_evidence_renderer/recorder.py` | `EvidenceRecorder` — live RTSP + ring buffer + trigger | 🚧 v0.2 stub |
+| `src/cv_evidence_renderer/buffer.py` | Ring buffer with keyframe-aware seek | 🚧 v0.2 stub |
+| `src/cv_evidence_renderer/io/rtsp.py` | Threaded RTSP reader, auto-reconnect | 🚧 v0.2 stub |
+| `src/cv_evidence_renderer/pool.py` | Multi-stream encoder pool | 🚧 v0.3 stub |
 
 ---
 
@@ -232,6 +233,12 @@ CPU-only libx264 on M4 already runs faster than realtime up to 1080p; NVENC on a
 
 ## Roadmap
 
+Live roadmap with sub-tasks: see [Issue #1 — v0.2 (NVENC encoder and live RTSP recorder)](https://github.com/ddinhcchi/cv-evidence-renderer/issues/1).
+
+Beyond v0.2:
+
+- Multi-stream encoder pool sharing one NVENC session
+- Plugin overlay API for custom lines, points, distance vectors, zone polygons
 - DeepStream sink integration (close the [no-Python-binding](https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682) gap)
 - Overlapping recordings on the same stream ([feature DeepStream explicitly doesn't support](https://forums.developer.nvidia.com/t/need-parallel-overlap-recording-on-the-same-stream/337137))
 - Per-event metadata sidecar (JSON + MKV chapters)
