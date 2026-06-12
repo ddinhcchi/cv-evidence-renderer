@@ -196,7 +196,8 @@ footer .links a { margin: 0 12px; }
     <p class="problem-quote">
       "How to overlay bbox and save a clip on event?" — recurring thread on the
       NVIDIA DeepStream forum since 2022. The only official answer (Smart Record) has
-      no Python bindings and bbox burn-in has been broken since DeepStream 6.4.
+      no Python bindings in the official <code>pyds</code> bindings, and Smart Record
+      itself still has open multi-stream crash reports on DeepStream 7.1.
     </p>
   </div>
 </section>
@@ -214,7 +215,7 @@ footer .links a { margin: 0 12px; }
         <tr><td><strong>Cross-file event concat</strong></td><td class="cmark">✓</td><td class="xmark">✗</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
         <tr><td><strong>Decode-once batch</strong></td><td class="cmark">✓</td><td class="xmark">✗</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
         <tr><td>Output duration cap (timelapse / framedrop)</td><td class="cmark">✓</td><td class="xmark">✗</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
-        <tr><td>Bbox burn-in</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="wmark">⚠ bug since 6.4</td><td class="xmark">✗</td></tr>
+        <tr><td>Bbox burn-in</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="xmark">✗</td></tr>
         <tr><td>supervision interop</td><td class="cmark">✓</td><td>—</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
         <tr><td>Ultralytics YOLO adapter</td><td class="cmark">✓</td><td class="cmark">✓</td><td class="xmark">✗</td><td class="xmark">✗</td></tr>
         <tr><td>NVENC encode</td><td class="wmark">🚧 v0.2</td><td class="xmark">✗</td><td class="cmark">✓</td><td class="xmark">✗</td></tr>
@@ -287,7 +288,7 @@ footer .links a { margin: 0 12px; }
       <dt>Why not just use supervision?</dt>
       <dd>We complement it. Pass <code>sv.Detections</code> straight in. We add what supervision doesn't have: event-window trim, ring buffer (v0.2), and eventually NVENC.</dd>
       <dt>Why not just use DeepStream Smart Record?</dt>
-      <dd>NVIDIA confirmed on their <a href="https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682">developer forum</a> that there's no Python binding, and bbox burn-in has been <a href="https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732">broken since 6.4</a>. When (if) NVIDIA ships Python bindings, we'll add a sink so you can use both together.</dd>
+      <dd>NVIDIA confirmed on their <a href="https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682">developer forum</a> that the official <code>pyds</code> bindings don't expose Smart Record (a <a href="https://github.com/RenatoMaynard/Smart-Recording-Deepstream-in-Python">community fork</a> exists with a custom-built wheel). Smart Record itself also has <a href="https://forums.developer.nvidia.com/t/jetson-agx-orin-deepstream-7-1-smart-record-custom-recording-triggers-nvbufsurface-cuda-faults-and-nvenc-crashes-with-13-rtsp-sources/352066">open multi-stream crash reports on DS 7.1</a>. When NVIDIA upstreams a clean Python API we'll add a sink so you can use both together.</dd>
       <dt>Why not just write it yourself with FFmpeg subprocess?</dt>
       <dd>Because you already did, twice, and it broke under multi-stream. This is the library version of that script, done right.</dd>
       <dt>What about NVENC?</dt>

@@ -7,7 +7,7 @@
 | Repo | ⭐ | Last commit | GPU? | Trim/record? | Multi-stream? | Gap vs cv-evidence-renderer |
 |---|---|---|---|---|---|---|
 | [roboflow/supervision](https://github.com/roboflow/supervision) | ~39.5k | Very active 2026 | No (CPU OpenCV) | Partial — `VideoSink` is OpenCV `mp4v` only, no event-window trim | No | No NVENC, no RTSP-trigger record, no pre/post buffer event clips, codec stuck on `mp4v` |
-| [NVIDIA-AI-IOT/deepstream_python_apps](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps) | ~1.8k | Sep 2025 | Yes (NVENC/CUDA via GStreamer) | Smart Record exists in C, **not exposed in Python bindings** | Yes | DeepStream-locked, very steep learning curve, no clean Python API for smart-record |
+| [NVIDIA-AI-IOT/deepstream_python_apps](https://github.com/NVIDIA-AI-IOT/deepstream_python_apps) | ~1.8k | Sep 2025 | Yes (NVENC/CUDA via GStreamer) | Smart Record exists in C, **not in official pyds**; a [community fork](https://github.com/RenatoMaynard/Smart-Recording-Deepstream-in-Python) ships a custom wheel | Yes | DeepStream-locked, very steep learning curve, no clean Python API for smart-record in official bindings |
 | [prominenceai/deepstream-services-library (DSL)](https://github.com/prominenceai/deepstream-services-library) | ~341 | Active | Yes | Yes (Record Tap + ODE Actions) | Yes | DeepStream/GStreamer-locked, C++17 lib with Python C-bindings, niche audience, high friction install |
 | [abhiTronix/vidgear](https://github.com/abhiTronix/vidgear) | ~7k | Active | Partial (NVENC via FFmpeg user-params) | WriteGear writes streams, no event-window logic | Yes (multi-thread) | Generic video framework — no detection/bbox concept, user must hand-build event trimming + overlay |
 | [obss/sahi](https://github.com/obss/sahi) | ~5.3k | Sep 2025 | No | No (CPU video predict only) | No | Inference-focused; bbox render is incidental |
@@ -34,7 +34,7 @@
 - Feature requests like [#357 real-time streaming](https://github.com/roboflow/supervision/issues/357) and [#1909 GPU not accelerated](https://github.com/roboflow/supervision/issues/1909) show users repeatedly hitting the encoding ceiling.
 
 ### NVIDIA-AI-IOT/deepstream_python_apps (~1.8k ⭐)
-- Python bindings (pyds) for DeepStream SDK. Sample apps like deepstream-test5 demo smart-record, but **the Smart Record APIs themselves have no Python bindings**. NVIDIA confirmed: *"There is no python binding for smart recording APIs. It is not supported with pyds now."*
+- Python bindings (pyds) for DeepStream SDK. Sample apps like deepstream-test5 demo smart-record, but **the Smart Record APIs themselves are not in official pyds**. NVIDIA confirmed in 2022: *"There is no python binding for smart recording APIs. It is not supported with pyds now."* As of DS 7.1 (latest 2025) the official pyds still doesn't expose them; a [community fork](https://github.com/RenatoMaynard/Smart-Recording-Deepstream-in-Python) ships a custom-built wheel as workaround.
 - Requires DeepStream SDK install, NVIDIA hardware, GStreamer fluency. High barrier; community treats it as last-resort.
 
 ### obss/sahi (~5.3k ⭐)
@@ -43,7 +43,8 @@
 ## Evidence of user demand
 
 ### DeepStream forum (active 2024–2026)
-- [Deepstream 6.4 Smart Record Video Issue with bbox enabled](https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732) — *"When we use the smart record bin at the sink end of the pipeline, after the encoder, the resulting video is glitchy with randomly occurring gray/green dots."* **Closed without resolution.**
+- [Deepstream 6.4 Smart Record Video Issue with bbox enabled](https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732) (April 2024) — *"When we use the smart record bin at the sink end of the pipeline, after the encoder, the resulting video is glitchy with randomly occurring gray/green dots."* **Closed without confirmed fix** (NVIDIA: "no update from you... assuming this is not an issue anymore"). Status on DS 7.x not formally verified.
+- [Jetson AGX Orin (DeepStream 7.1) – Smart Record / custom recording triggers NvBufSurface CUDA faults and NVENC crashes with 13 RTSP sources](https://forums.developer.nvidia.com/t/jetson-agx-orin-deepstream-7-1-smart-record-custom-recording-triggers-nvbufsurface-cuda-faults-and-nvenc-crashes-with-13-rtsp-sources/352066) (2025) — recent open thread showing Smart Record reliability issues persist on the latest DS 7.1.
 - [How to use smart record in deepstream 6.1 python](https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682) — NVIDIA staff reply: *"There is no python binding for smart recording APIs. It is not supported with pyds now."*
 - [Deepstream smart record implementation](https://forums.developer.nvidia.com/t/deepstream-smart-record-implementation/362581) (2026) — user struggling to trigger smart-record from cloud events; required undocumented config patches.
 - [Need parallel/overlap recording on the same stream](https://forums.developer.nvidia.com/t/need-parallel-overlap-recording-on-the-same-stream/337137) (2025) — DeepStream explicitly does not support overlapping recordings on a stream.

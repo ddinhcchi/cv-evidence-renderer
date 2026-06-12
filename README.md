@@ -15,7 +15,7 @@ The missing **evidence-clip layer** between your detector and storage. Point it 
 Every CV team shipping to production hits the same wall: the detector fires, and now you need a **short MP4 clip of the event with bounding boxes drawn on it**, to attach to an alert, archive for compliance, or replay during QA. The existing options are all incomplete:
 
 - [`supervision`](https://github.com/roboflow/supervision) (39k ⭐) owns Python drawing — but its `VideoSink` is `cv2.VideoWriter` with `mp4v` hard-coded. No NVENC, no event window, no pre/post buffer.
-- DeepStream's **Smart Record** is the official NVIDIA answer — but it has [no Python bindings](https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682) (NVIDIA staff confirmed), and bbox burn-in [has been broken since 6.4](https://forums.developer.nvidia.com/t/deepstream-6-4-smart-record-video-issue-with-bbox-enabled/290732).
+- DeepStream's **Smart Record** is the official NVIDIA answer — but it has [no Python bindings in official `pyds`](https://forums.developer.nvidia.com/t/how-to-use-smart-record-in-deepstream-6-1-python/231682) (NVIDIA staff confirmed; a [community fork](https://github.com/RenatoMaynard/Smart-Recording-Deepstream-in-Python) ships a custom wheel as a workaround), and Smart Record itself still has [open multi-stream crash reports on DS 7.1](https://forums.developer.nvidia.com/t/jetson-agx-orin-deepstream-7-1-smart-record-custom-recording-triggers-nvbufsurface-cuda-faults-and-nvenc-crashes-with-13-rtsp-sources/352066).
 - The canonical [PyImageSearch KeyClipWriter](https://pyimagesearch.com/2016/02/29/saving-key-event-video-clips-with-opencv/) ring-buffer pattern is detection-agnostic, OpenCV-only, and isn't a library.
 
 So every team hand-rolls OpenCV + an FFmpeg subprocess, ships the bug to prod, and writes it again on the next project. This repo is the library version of that pattern — done once, done right, with the GPU encoding path designed for v0.2.
@@ -257,12 +257,12 @@ See [COMPETITORS.md](COMPETITORS.md) for the full research write-up.
 | **Cross-file event concat** (NVR-style split files) | ✅ | ❌ | ❌ | ❌ |
 | **Decode-once batch** for N events on one source | ✅ | ❌ | ❌ | ❌ |
 | Output duration cap (timelapse / framedrop) | ✅ | ❌ | ❌ | ❌ |
-| Bbox burn-in into evidence | ✅ | ✅ (excellent) | ⚠️ (bug since 6.4) | ❌ |
+| Bbox burn-in into evidence | ✅ | ✅ (excellent) | ✅ | ❌ |
 | supervision interop | ✅ | — | ❌ | ❌ |
 | Ultralytics YOLO adapter | ✅ | ✅ (via `from_ultralytics`) | ❌ | ❌ |
 | NVENC encode | 🚧 v0.2 | ❌ | ✅ | ❌ |
 | Live RTSP ring buffer | 🚧 v0.2 | ❌ | ✅ (C only) | ✅ |
-| Multi-stream pool | 🚧 v0.3 | ❌ | ✅ | ❌ |
+| Multi-stream pool | 🚧 v0.3 | ❌ | ⚠️ (open [crash report](https://forums.developer.nvidia.com/t/jetson-agx-orin-deepstream-7-1-smart-record-custom-recording-triggers-nvbufsurface-cuda-faults-and-nvenc-crashes-with-13-rtsp-sources/352066) on DS 7.1, 13 streams) | ❌ |
 
 ---
 
